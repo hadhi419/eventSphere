@@ -1,0 +1,8 @@
+{
+  "name": "eventsphere-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {"dev": "vite", "build": "vite build"},
+  "dependencies": {"jsqr": "1.4.0", "react": "^19.0.0", "react-dom": "^19.0.0"},
+  "devDependencies": {"vite": "^7.0.0", "@vitejs/plugin-react": "^5.0.0"}
+}

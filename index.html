@@ -1,0 +1,165 @@
+﻿<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EventSphere</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f4fa;color:#201733;font:16px/1.5 system-ui,sans-serif}header{background:#251545;color:white}header div,main{max-width:960px;margin:auto;padding:20px}header div{display:flex;align-items:center;gap:16px;flex-wrap:wrap}header strong{font-size:22px;margin-right:auto}main{padding-top:32px}h1{margin:0 0 16px}h2,h3{margin:0 0 8px}section,article{background:white;border:1px solid #ded9ec;border-radius:14px;padding:18px;margin-bottom:16px}form,.actions{display:flex;flex-wrap:wrap;gap:10px;align-items:end}label{display:grid;gap:4px;min-width:0}input,button{font:inherit;border-radius:8px;padding:8px 12px;max-width:100%}input{border:1px solid #8a809e}button{background:#5c34a3;color:white;border:1px solid transparent;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid #ab88ec;outline-offset:2px}#notice{min-height:1.5em;overflow-wrap:anywhere}#results{overflow-wrap:anywhere}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:16px}.grid article{margin:0}small{color:#55496a}[hidden]{display:none!important}
+</style>
+<header><div><strong>EventSphere</strong><button id="browse">Events</button><button id="account">Sign in</button></div></header>
+<main>
+<h1 id="heading">Upcoming events</h1>
+<section id="auth" hidden>
+<h2>Attendee accounts and staff sign-in</h2>
+<form id="login">
+<label>Username<input name="username" autocomplete="username" required></label>
+<label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+<button value="login">Sign in</button><button value="register">Register attendee</button>
+</form>
+</section>
+<form id="search">
+<label>Search events<input name="keyword" type="search"></label>
+<label>Category<input name="category"></label>
+<button>Search</button>
+</form>
+<p id="notice" role="status"></p>
+<div id="role-actions" class="actions"></div>
+<div id="results"></div>
+</main>
+<script>
+'use strict';
+const get = id => document.getElementById(id);
+let token = '', role = '';
+const date = value => new Date(value).toLocaleString('en-LK', {timeZone:'Asia/Colombo', dateStyle:'medium',timeStyle:'short'});
+const money = value => new Intl.NumberFormat('en-LK',{style:'currency',currency:'LKR'}).format(value/100);
+function node(tag, value, target) {
+    const element = document.createElement(tag);
+    element.textContent = value;
+    target.append(element);
+    return element;
+}
+function action(label, target, handler) {
+    const button = node('button',label,target);
+    button.type = 'button';
+    button.onclick = () => run(handler);
+}
+async function run(handler) {
+    get('notice').textContent = '';
+    try { await handler(); }
+    catch (error) { get('notice').textContent = error.message; }
+}
+async function api(path, method='GET', data) {
+    const headers = {};
+    if (token) headers.Authorization = 'Bearer '+token;
+    if (data) headers['Content-Type'] = 'application/json';
+    const response = await fetch(path,{method,headers,body:data ? JSON.stringify(data) : undefined});
+    const value = await response.json();
+    if (!response.ok) throw Error(typeof value.detail === 'string' ? value.detail : 'Check the values you entered.');
+    if (value.performative === 'REFUSE') throw Error(value.content.reason);
+    return value;
+}
+function view(title, search=false) {
+    get('heading').textContent = title;
+    get('search').hidden = !search;
+    get('results').replaceChildren();
+    get('results').className = search ? 'grid' : '';
+    return get('results');
+}
+async function browse() {
+    const params = new URLSearchParams(new FormData(get('search')));
+    if (!params.get('category').trim()) params.delete('category');
+    const events = await api('/events?'+params);
+    const target = view('Upcoming events',true);
+    const upcoming = events.filter(event => Date.parse(event.starts_at)>Date.now());
+    if (!upcoming.length) node('p','No upcoming events match your search.',target);
+    for (const event of upcoming) {
+        const card = node('article','',target);
+        node('small',event.category,card);
+        node('h2',event.title,card);
+        node('p',event.venue_name+' · '+date(event.starts_at),card);
+        action('View tickets',card,()=>details(event.id));
+    }
+}
+async function details(id) {
+    const event = await api('/events/'+encodeURIComponent(id));
+    const target = view(event.title);
+    node('p',date(event.starts_at)+' – '+date(event.ends_at)+' (Sri Lanka time)',target);
+    node('p',event.description,target);
+    for (const ticket of event.tickets) {
+        const card = node('article','',target);
+        node('h2',ticket.name,card);
+        node('p',money(ticket.price_minor)+' · '+ticket.remaining+' available',card);
+        if (role !== 'attendee' || ticket.remaining < 1) continue;
+        const label = node('label','Quantity',card);
+        const quantity = node('input','',label);
+        Object.assign(quantity,{type:'number',value:1,min:1,max:Math.min(6,ticket.remaining)});
+        action('Book tickets',card,async()=>{
+            if (!quantity.reportValidity() || !quantity.value) return;
+            const params = new URLSearchParams({category_id:ticket.id,quantity:quantity.value});
+            const booking = await api('/events/'+id+'/book?'+params,'POST');
+            await history();
+            get('notice').textContent = 'Booking confirmed. Reference '+booking.content.payment_reference;
+        });
+    }
+}
+async function history() {
+    const bookings = await api('/bookings');
+    const target = view('My bookings');
+    if (!bookings.length) node('p','You have no bookings yet.',target);
+    for (const booking of bookings) {
+        const card = node('article','',target);
+        node('h2',booking.title,card);
+        node('p',booking.quantity+' ticket(s) · '+money(booking.total_minor),card);
+        node('small',booking.payment_reference,card);
+        if (booking.refund_minor !== null) {
+            node('p','Cancelled · Refund '+money(booking.refund_minor),card);
+        } else {
+            for (const code of booking.codes) node('p',code,card);
+            action('Cancel booking',card,async()=>{
+                if (!confirm('Cancel all tickets in this booking?')) return;
+                const reply = await api('/bookings/'+booking.payment_reference+'/cancel','POST');
+                await history();
+                get('notice').textContent = 'Booking cancelled. Refund '+money(reply.content.refund_minor);
+            });
+        }
+    }
+}
+async function notices() {
+    const entries = await api('/notifications');
+    const target = view('Notifications');
+    if (!entries.length) node('p','You have no notifications yet.',target);
+    for (const entry of entries) node('article',entry.body,target);
+}
+function accountUI() {
+    get('account').textContent = token ? 'Sign out' : 'Sign in';
+    get('role-actions').replaceChildren();
+    if (role === 'attendee') {
+        action('My bookings',get('role-actions'),history);
+        action('Notifications',get('role-actions'),notices);
+    }
+}
+get('account').onclick = () => run(async()=>{
+    if (!token) { get('auth').hidden = !get('auth').hidden; return; }
+    token = role = '';
+    accountUI();
+    await browse();
+});
+get('login').onsubmit = event => {
+    event.preventDefault();
+    run(async()=>{
+        const values = Object.fromEntries(new FormData(event.target));
+        if (event.submitter?.value === 'register') await api('/auth/register','POST',values);
+        const login = await api('/auth/login','POST',values);
+        token = login.access_token;
+        role = login.role;
+        event.target.reset();
+        get('auth').hidden = true;
+        accountUI();
+        await browse();
+    });
+};
+get('browse').onclick = () => run(browse);
+get('search').onsubmit = event => { event.preventDefault(); run(browse); };
+run(browse);
+</script>
+</html>
